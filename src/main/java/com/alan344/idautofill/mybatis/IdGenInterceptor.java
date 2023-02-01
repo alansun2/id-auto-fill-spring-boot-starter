@@ -10,6 +10,7 @@ import org.apache.ibatis.plugin.*;
 import org.apache.ibatis.type.JdbcType;
 import org.apache.ibatis.type.ObjectTypeHandler;
 import org.mybatis.dynamic.sql.insert.render.DefaultInsertStatementProvider;
+import org.mybatis.dynamic.sql.insert.render.MultiRowInsertStatementProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.annotation.AnnotationUtils;
@@ -18,10 +19,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 
 /**
  * @author AlanSun
@@ -56,8 +54,19 @@ public class IdGenInterceptor implements Interceptor {
     /**
      * 生成分布式 id 并填充到 model
      */
-    public void fillId(Object[] args, Object obj) throws InvocationTargetException, IllegalAccessException {
-        final Class<?> clazz = obj.getClass();
+    private void fillId(Object[] args, Object obj) throws InvocationTargetException, IllegalAccessException {
+        Class<?> clazz = obj.getClass();
+        // 是否是集合
+        boolean isCollection = false;
+        Collection collection = null;
+        if (MultiRowInsertStatementProvider.class.isAssignableFrom(clazz)) {
+            final MultiRowInsertStatementProvider multiRowInsertStatementProvider = (MultiRowInsertStatementProvider) obj;
+            final Object o = multiRowInsertStatementProvider.getRecords().get(0);
+            clazz = o.getClass();
+            isCollection = true;
+            collection = multiRowInsertStatementProvider.getRecords();
+        }
+
         // 有 {@link IdGen} 注解的第一个字段的 set 方法
         IdFillMethod idFillMethod = this.getIdFillMethod(clazz);
 
@@ -65,12 +74,28 @@ public class IdGenInterceptor implements Interceptor {
             return;
         }
 
+        if (isCollection) {
+            this.multiHandle(collection, idFillMethod);
+        } else {
+            this.singleHandle(args, obj, idFillMethod);
+        }
+    }
+
+    private void singleHandle(Object[] args, Object obj, IdFillMethod idFillMethod) throws InvocationTargetException, IllegalAccessException {
         final IdFill idFill = idFillMethod.getIdFill();
         final long id = idFillService.getId(idFill);
         idFillMethod.getMethod().invoke(obj, id);
 
         // 处理调用 insertSelective 没有 id 字段的情况
         this.setFieldInToSqlIfNecessary(args, idFillMethod);
+    }
+
+    private void multiHandle(Collection collection, IdFillMethod idFillMethod) throws InvocationTargetException, IllegalAccessException {
+        final IdFill idFill = idFillMethod.getIdFill();
+        for (Object o : collection) {
+            final long id = idFillService.getId(idFill);
+            idFillMethod.getMethod().invoke(o, id);
+        }
     }
 
     /**
