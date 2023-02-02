@@ -21,5 +21,7 @@ public class IdFillMethod {
 
     private IdFill idFill;
 
-    private Method method;
+    private Method setMethod;
+
+    private Method getMethod;
 }

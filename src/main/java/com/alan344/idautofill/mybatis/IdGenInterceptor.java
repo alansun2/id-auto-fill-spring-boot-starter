@@ -82,9 +82,14 @@ public class IdGenInterceptor implements Interceptor {
     }
 
     private void singleHandle(Object[] args, Object obj, IdFillMethod idFillMethod) throws InvocationTargetException, IllegalAccessException {
+        final Method getMethod = idFillMethod.getGetMethod();
+        final Object result = getMethod.invoke(obj);
+        if (result != null) {
+            return;
+        }
         final IdFill idFill = idFillMethod.getIdFill();
         final long id = idFillService.getId(idFill);
-        idFillMethod.getMethod().invoke(obj, id);
+        idFillMethod.getSetMethod().invoke(obj, id);
 
         // 处理调用 insertSelective 没有 id 字段的情况
         this.setFieldInToSqlIfNecessary(args, idFillMethod);
@@ -92,9 +97,15 @@ public class IdGenInterceptor implements Interceptor {
 
     private void multiHandle(Collection collection, IdFillMethod idFillMethod) throws InvocationTargetException, IllegalAccessException {
         final IdFill idFill = idFillMethod.getIdFill();
+        final Method getMethod = idFillMethod.getGetMethod();
+        final Method setMethod = idFillMethod.getSetMethod();
         for (Object o : collection) {
+            final Object result = getMethod.invoke(o);
+            if (result != null) {
+                break;
+            }
             final long id = idFillService.getId(idFill);
-            idFillMethod.getMethod().invoke(o, id);
+            setMethod.invoke(o, id);
         }
     }
 
@@ -243,17 +254,17 @@ public class IdGenInterceptor implements Interceptor {
         final String fieldName = fieldWithIdGenAnnotation.getName();
 
         // get method if 'set' concat field's name in lower case equal method's name in lower case
-        Method methodWithIdGenAnnotation = null;
         final Method[] declaredMethods = clazz.getDeclaredMethods();
-        for (Method declaredMethod : declaredMethods) {
-            if (declaredMethod.getName().toLowerCase().equals("set" + fieldName.toLowerCase())) {
-                methodWithIdGenAnnotation = declaredMethod;
-                break;
-            }
-        }
+        final Optional<Method> setMethodOpt = Arrays.stream(declaredMethods)
+                .filter(method -> !method.isBridge() && method.getName().toLowerCase().equals("set" + fieldName.toLowerCase()))
+                .findFirst();
+
+        final Optional<Method> getMethodOpt = Arrays.stream(declaredMethods)
+                .filter(method -> !method.isBridge() && method.getName().toLowerCase().equals("get" + fieldName.toLowerCase()))
+                .findFirst();
 
         // 是否有 set 方法，如果方法不存在则不处理
-        if (null == methodWithIdGenAnnotation) {
+        if (!setMethodOpt.isPresent() || !getMethodOpt.isPresent()) {
             return null;
         }
 
@@ -266,7 +277,8 @@ public class IdGenInterceptor implements Interceptor {
         }
         idFillMethod.setColumnName(columnName);
         idFillMethod.setIdFill(annotation);
-        idFillMethod.setMethod(methodWithIdGenAnnotation);
+        idFillMethod.setSetMethod(setMethodOpt.get());
+        idFillMethod.setGetMethod(getMethodOpt.get());
         return idFillMethod;
     }
 
