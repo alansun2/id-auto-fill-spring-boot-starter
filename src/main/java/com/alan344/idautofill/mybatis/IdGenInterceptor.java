@@ -6,7 +6,10 @@ import com.google.common.base.CaseFormat;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.ibatis.executor.Executor;
 import org.apache.ibatis.mapping.*;
-import org.apache.ibatis.plugin.*;
+import org.apache.ibatis.plugin.Interceptor;
+import org.apache.ibatis.plugin.Intercepts;
+import org.apache.ibatis.plugin.Invocation;
+import org.apache.ibatis.plugin.Signature;
 import org.apache.ibatis.type.JdbcType;
 import org.apache.ibatis.type.ObjectTypeHandler;
 import org.mybatis.dynamic.sql.insert.render.DefaultInsertStatementProvider;
@@ -37,7 +40,7 @@ public class IdGenInterceptor implements Interceptor {
      */
     private final Map<Type, IdFillMethod> typeIdSetMethodMap = new HashMap<>(64);
 
-    private final Map<MappedStatement, MappedStatement> classMappedStatementMap = new HashMap<>(64);
+    private final Map<String, MappedStatement> classMappedStatementMap = new HashMap<>(64);
 
     @Override
     public Object intercept(Invocation invocation) throws Throwable {
@@ -58,9 +61,9 @@ public class IdGenInterceptor implements Interceptor {
         Class<?> clazz = obj.getClass();
         // 是否是集合
         boolean isCollection = false;
-        Collection collection = null;
+        Collection<?> collection = null;
         if (MultiRowInsertStatementProvider.class.isAssignableFrom(clazz)) {
-            final MultiRowInsertStatementProvider multiRowInsertStatementProvider = (MultiRowInsertStatementProvider) obj;
+            final MultiRowInsertStatementProvider<?> multiRowInsertStatementProvider = (MultiRowInsertStatementProvider<?>) obj;
             final Object o = multiRowInsertStatementProvider.getRecords().get(0);
             clazz = o.getClass();
             isCollection = true;
@@ -91,11 +94,14 @@ public class IdGenInterceptor implements Interceptor {
         final long id = idFillService.getId(idFill);
         idFillMethod.getSetMethod().invoke(obj, id);
 
+        MappedStatement mappedStatement = (MappedStatement) args[0];
+        final Object parameter = args[1];
+        final BoundSql boundSql = mappedStatement.getBoundSql(parameter);
         // 处理调用 insertSelective 没有 id 字段的情况
-        this.setFieldInToSqlIfNecessary(args, idFillMethod);
+        this.setFieldInToSqlIfNecessary(args, idFillMethod, boundSql.getSql());
     }
 
-    private void multiHandle(Collection collection, IdFillMethod idFillMethod) throws InvocationTargetException, IllegalAccessException {
+    private void multiHandle(Collection<?> collection, IdFillMethod idFillMethod) throws InvocationTargetException, IllegalAccessException {
         final IdFill idFill = idFillMethod.getIdFill();
         final Method getMethod = idFillMethod.getGetMethod();
         final Method setMethod = idFillMethod.getSetMethod();
@@ -112,7 +118,7 @@ public class IdGenInterceptor implements Interceptor {
     /**
      * 处理 insertSelective 方法，没有 id 字段的情况
      */
-    private void setFieldInToSqlIfNecessary(Object[] args, IdFillMethod idFillMethod) {
+    private void setFieldInToSqlIfNecessary(Object[] args, IdFillMethod idFillMethod, String oldSql) {
         MappedStatement ms = (MappedStatement) args[0];
         final BoundSql boundSql = ms.getBoundSql(args[1]);
         final String sql = boundSql.getSql();
@@ -120,7 +126,7 @@ public class IdGenInterceptor implements Interceptor {
             return;
         }
 
-        MappedStatement mappedStatement = classMappedStatementMap.get(ms);
+        MappedStatement mappedStatement = classMappedStatementMap.get(oldSql);
         if (mappedStatement != null) {
             args[0] = mappedStatement;
             return;
@@ -147,7 +153,7 @@ public class IdGenInterceptor implements Interceptor {
         parameterMappings.add(0, build);
 
         mappedStatement = this.newMappedStatement(ms, boundSqlSqlSource);
-        classMappedStatementMap.put(ms, mappedStatement);
+        classMappedStatementMap.put(oldSql, mappedStatement);
         args[0] = mappedStatement;
     }
 
@@ -280,16 +286,6 @@ public class IdGenInterceptor implements Interceptor {
         idFillMethod.setSetMethod(setMethodOpt.get());
         idFillMethod.setGetMethod(getMethodOpt.get());
         return idFillMethod;
-    }
-
-    @Override
-    public Object plugin(Object target) {
-        return Plugin.wrap(target, this);
-    }
-
-    @Override
-    public void setProperties(Properties properties) {
-        // nothing to do
     }
 
     /**
